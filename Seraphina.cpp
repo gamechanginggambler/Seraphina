@@ -814,3 +814,634 @@ public:
     }
 };
 
+class SToken {
+public:
+    string type;
+    string text;
+    double value;
+    SToken() : value(0.0) {}
+    SToken(const string& t,const string& x,double v=0.0):type(t),text(x),value(v){}
+};
+
+class STokenizer {
+    string src;
+    size_t pos;
+public:
+    STokenizer():pos(0){}
+    STokenizer(const string&s):src(s),pos(0){}
+    void reset(const string&s){src=s;pos=0;}
+    bool eof()const{return pos>=src.size();}
+    char peek()const{return eof()?'\0':src[pos];}
+    char get(){return eof()?'\0':src[pos++];}
+    void skip_ws(){while(!eof()&&(src[pos]==' '||src[pos]=='\t'||src[pos]=='\n'||src[pos]=='\r'))pos++;}
+    SToken next() {
+        skip_ws();
+        if(eof())return SToken("eof","",0.0);
+        char c=peek();
+        if(isalpha(c)||c=='_'){
+            string id;
+            while(!eof()&&(isalnum(peek())||peek()=='_'||peek()=='.'))id.push_back(get());
+            return SToken("id",id,0.0);
+        }
+        if(isdigit(c)||c=='.'){
+            string num;
+            bool dot=false;
+            while(!eof()&&(isdigit(peek())||peek()=='.')){
+                if(peek()=='.'){
+                    if(dot)break;
+                    dot=true;
+                }
+                num.push_back(get());
+            }
+            return SToken("num",num,stod(num));
+        }
+        if(c=='"'||c=='\''){
+            char q=get();
+            string s;
+            while(!eof()&&peek()!=q){
+                s.push_back(get());
+            }
+            if(!eof())get();
+            return SToken("str",s,0.0);
+        }
+        string op;
+        op.push_back(get());
+        if(!eof()){
+            string two=op;
+            two.push_back(peek());
+            if(two=="=="||two=="!="||two=="<="||two==">="||two=="&&"||two=="||"){
+                get();
+                op=two;
+            }
+        }
+        return SToken("op",op,0.0);
+    }
+};
+
+struct SNode {
+    string kind;
+    string name;
+    double value;
+    vector<shared_ptr<SNode>> children;
+    SNode(const string&k=""):kind(k),value(0.0){}
+};
+
+class SParser {
+    STokenizer tz;
+    SToken cur;
+public:
+    SParser(){}
+    void reset(const string&s){tz.reset(s);cur=tz.next();}
+    void adv(){cur=tz.next();}
+    bool match(const string&t,const string&v=""){
+        if(cur.type==t&&(v.empty()||cur.text==v)){adv();return true;}
+        return false;
+    }
+    shared_ptr<SNode> parse_primary(){
+        if(cur.type=="num"){
+            auto n=make_shared<SNode>("num");
+            n->value=cur.value;
+            adv();
+            return n;
+        }
+        if(cur.type=="str"){
+            auto n=make_shared<SNode>("str");
+            n->name=cur.text;
+            adv();
+            return n;
+        }
+        if(cur.type=="id"){
+            string id=cur.text;
+            adv();
+            if(match("op","(")){
+                auto call=make_shared<SNode>("call");
+                call->name=id;
+                while(!match("op",")")&&!cur.type.empty()&&cur.type!="eof"){
+                    auto arg=parse_expr();
+                    if(arg)call->children.push_back(arg);
+                    if(!match("op",","))break;
+                }
+                match("op",")");
+                return call;
+            }else{
+                auto n=make_shared<SNode>("var");
+                n->name=id;
+                return n;
+            }
+        }
+        if(match("op","(")){
+            auto e=parse_expr();
+            match("op",")");
+            return e;
+        }
+        auto n=make_shared<SNode>("num");
+        n->value=0.0;
+        return n;
+    }
+    shared_ptr<SNode> parse_unary(){
+        if(cur.type=="op"&&(cur.text=="+"||cur.text=="-"||cur.text=="!")){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("unary");
+            n->name=op;
+            n->children.push_back(parse_unary());
+            return n;
+        }
+        return parse_primary();
+    }
+    shared_ptr<SNode> parse_mul(){
+        auto left=parse_unary();
+        while(cur.type=="op"&&(cur.text=="*"||cur.text=="/")){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("bin");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_unary());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_add(){
+        auto left=parse_mul();
+        while(cur.type=="op"&&(cur.text=="+"||cur.text=="-")){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("bin");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_mul());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_cmp(){
+        auto left=parse_add();
+        while(cur.type=="op"&&(cur.text=="<"||cur.text==">"||cur.text=="<="||cur.text==">=")){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("cmp");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_add());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_eq(){
+        auto left=parse_cmp();
+        while(cur.type=="op"&&(cur.text=="=="||cur.text=="!=")){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("eq");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_cmp());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_and(){
+        auto left=parse_eq();
+        while(cur.type=="op"&&cur.text=="&&"){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("and");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_eq());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_or(){
+        auto left=parse_and();
+        while(cur.type=="op"&&cur.text=="||"){
+            string op=cur.text;
+            adv();
+            auto n=make_shared<SNode>("or");
+            n->name=op;
+            n->children.push_back(left);
+            n->children.push_back(parse_and());
+            left=n;
+        }
+        return left;
+    }
+    shared_ptr<SNode> parse_expr(){
+        return parse_or();
+    }
+};
+
+class SVMContext {
+public:
+    unordered_map<string,double> scalars;
+    unordered_map<string,V> vectors;
+    MEM* mem;
+    E* state;
+    SVMContext():mem(nullptr),state(nullptr){}
+};
+
+class SVM {
+public:
+    double eval_node(shared_ptr<SNode> n,SVMContext&ctx){
+        if(!n)return 0.0;
+        if(n->kind=="num")return n->value;
+        if(n->kind=="var"){
+            auto it=ctx.scalars.find(n->name);
+            if(it!=ctx.scalars.end())return it->second;
+            return 0.0;
+        }
+        if(n->kind=="str"){
+            return (double)n->name.size();
+        }
+        if(n->kind=="unary"){
+            double v=eval_node(n->children[0],ctx);
+            if(n->name=="-")return -v;
+            if(n->name=="+")return v;
+            if(n->name=="!")return v==0.0?1.0:0.0;
+            return v;
+        }
+        if(n->kind=="bin"||n->kind=="cmp"||n->kind=="eq"||n->kind=="and"||n->kind=="or"){
+            double a=eval_node(n->children[0],ctx);
+            double b=eval_node(n->children[1],ctx);
+            if(n->name=="+")return a+b;
+            if(n->name=="-")return a-b;
+            if(n->name=="*")return a*b;
+            if(n->name=="/")return b==0.0?0.0:a/b;
+            if(n->name=="<")return a<b?1.0:0.0;
+            if(n->name==">")return a>b?1.0:0.0;
+            if(n->name=="<=")return a<=b?1.0:0.0;
+            if(n->name==">=")return a>=b?1.0:0.0;
+            if(n->name=="==")return a==b?1.0:0.0;
+            if(n->name=="!=")return a!=b?1.0:0.0;
+            if(n->name=="&&")return (a!=0.0&&b!=0.0)?1.0:0.0;
+            if(n->name=="||")return (a!=0.0||b!=0.0)?1.0:0.0;
+        }
+        if(n->kind=="call"){
+            if(n->name=="len"&&n->children.size()==1){
+                double v=eval_node(n->children[0],ctx);
+                return fabs(v);
+            }
+            if(n->name=="energy"&&ctx.state){
+                return ctx.state->e;
+            }
+            if(n->name=="fatigue"&&ctx.state){
+                return ctx.state->f;
+            }
+            if(n->name=="mem_count"&&ctx.mem){
+                return (double)ctx.mem->s();
+            }
+            if(n->name=="rand"){
+                static R r;
+                return r.u();
+            }
+        }
+        return 0.0;
+    }
+};
+
+class P_LANG : public P {
+    SParser parser;
+    SVM vm;
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        string src;
+        for(size_t k=0;k<i.d.size();k++){
+            unsigned char c=(unsigned char)min(255.0,max(0.0,i.d[k]*255.0));
+            if(c>=32&&c<127)src.push_back((char)c);
+        }
+        if(src.empty()){
+            o.push_back(i);
+            return;
+        }
+        parser.reset(src);
+        auto ast=parser.parse_expr();
+        SVMContext ctx;
+        ctx.mem=&m;
+        ctx.state=&e;
+        double val=vm.eval_node(ast,ctx);
+        V out(4);
+        out.d[0]=min(1.0,max(0.0,val));
+        out.d[1]=e.e;
+        out.d[2]=e.mo;
+        out.d[3]=e.cr;
+        o.push_back(out);
+        e.cc+=0.02;
+        e.int_c+=0.02;
+    }
+    string nm()override{return "P_LANG";}
+};
+
+class P_ADAPT : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V norm=i.n();
+        V stats(6);
+        double sum=0.0;
+        double mx=-1e9;
+        double mn=1e9;
+        for(double x:i.d){
+            sum+=x;
+            mx=max(mx,x);
+            mn=min(mn,x);
+        }
+        double avg=i.d.empty()?0.0:sum/i.d.size();
+        stats.d[0]=avg;
+        stats.d[1]=mx;
+        stats.d[2]=mn;
+        stats.d[3]=i.m();
+        stats.d[4]=norm.m();
+        stats.d[5]=e.e;
+        o.push_back(norm);
+        o.push_back(stats);
+        e.cu+=0.02;
+    }
+    string nm()override{return "P_ADAPT";}
+};
+
+class P_CODEC : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V packed(i.d.size());
+        for(size_t k=0;k<i.d.size();k++){
+            double x=i.d[k];
+            x=min(1.0,max(0.0,x));
+            unsigned char c=(unsigned char)(x*255.0);
+            packed.d[k]=((double)c)/255.0;
+        }
+        o.push_back(packed);
+        e.cc+=0.015;
+    }
+    string nm()override{return "P_CODEC";}
+};
+
+class P_ROUTE : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V a=i;
+        V b=i.n();
+        V c(4);
+        c.d[0]=e.e;
+        c.d[1]=e.mo;
+        c.d[2]=e.cr;
+        c.d[3]=e.fc;
+        o.push_back(a);
+        o.push_back(b);
+        o.push_back(c);
+        e.fc+=0.02;
+    }
+    string nm()override{return "P_ROUTE";}
+};
+
+class P_SCHEMA : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        size_t n=i.d.size();
+        V schema(8);
+        schema.d[0]=n/1024.0;
+        schema.d[1]=e.goals[0];
+        schema.d[2]=e.goals[1];
+        schema.d[3]=e.goals[2];
+        schema.d[4]=e.skills[0];
+        schema.d[5]=e.skills[1];
+        schema.d[6]=e.skills[2];
+        schema.d[7]=e.skills[3];
+        o.push_back(schema);
+        e.fc+=0.02;
+        e.imp+=0.01;
+    }
+    string nm()override{return "P_SCHEMA";}
+};
+
+class P_PLAN : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V plan(10);
+        double goal_focus=e.goals[0]*0.4+e.goals[1]*0.3+e.goals[2]*0.3;
+        double energy_factor=e.e*(1.0-e.f);
+        double stress_factor=1.0-e.st;
+        double curiosity_factor=e.cu;
+        double creativity_factor=e.cr;
+        double stability_factor=e.sb;
+        plan.d[0]=goal_focus;
+        plan.d[1]=energy_factor;
+        plan.d[2]=stress_factor;
+        plan.d[3]=curiosity_factor;
+        plan.d[4]=creativity_factor;
+        plan.d[5]=stability_factor;
+        plan.d[6]=e.purpose;
+        plan.d[7]=e.auth;
+        plan.d[8]=e.free;
+        plan.d[9]=e.exist;
+        o.push_back(plan);
+        e.fc+=0.02;
+        e.int_c+=0.02;
+        e.skills[3]+=0.01;
+        if(e.skills[3]>1)e.skills[3]=1;
+    }
+    string nm()override{return "P_PLAN";}
+};
+
+class P_REFLECT : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V ref(12);
+        ref.d[0]=e.e;
+        ref.d[1]=e.f;
+        ref.d[2]=e.st;
+        ref.d[3]=e.mo;
+        ref.d[4]=e.cr;
+        ref.d[5]=e.cu;
+        ref.d[6]=e.cc;
+        ref.d[7]=e.rl;
+        ref.d[8]=e.purpose;
+        ref.d[9]=e.auth;
+        ref.d[10]=e.free;
+        ref.d[11]=e.exist;
+        o.push_back(ref);
+        e.aw+=0.02;
+        e.int_c+=0.02;
+    }
+    string nm()override{return "P_REFLECT";}
+};
+
+class P_SUMMARY : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V s(6);
+        double sum=0.0;
+        double mx=-1e9;
+        double mn=1e9;
+        for(double x:i.d){
+            sum+=x;
+            mx=max(mx,x);
+            mn=min(mn,x);
+        }
+        double avg=i.d.empty()?0.0:sum/i.d.size();
+        s.d[0]=avg;
+        s.d[1]=mx;
+        s.d[2]=mn;
+        s.d[3]=i.m();
+        s.d[4]=e.fc;
+        s.d[5]=e.cc;
+        o.push_back(s);
+        e.fc+=0.015;
+    }
+    string nm()override{return "P_SUMMARY";}
+};
+
+class P_KNOW : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V know(8);
+        know.d[0]=m.s()/100000.0;
+        know.d[1]=m.avg_imp();
+        know.d[2]=e.skills[0];
+        know.d[3]=e.skills[1];
+        know.d[4]=e.skills[2];
+        know.d[5]=e.skills[3];
+        know.d[6]=e.skills[4];
+        know.d[7]=e.skills[5];
+        o.push_back(know);
+        e.imp+=0.015;
+        e.int_c+=0.015;
+    }
+    string nm()override{return "P_KNOW";}
+};
+
+class P_ROUTE_IO : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V in_sig=i;
+        V out_sig=i.n();
+        V meta(4);
+        meta.d[0]=e.e;
+        meta.d[1]=e.mo;
+        meta.d[2]=e.fc;
+        meta.d[3]=e.aw;
+        o.push_back(in_sig);
+        o.push_back(out_sig);
+        o.push_back(meta);
+        e.fc+=0.015;
+        e.cc+=0.015;
+    }
+    string nm()override{return "P_ROUTE_IO";}
+};
+
+class IOChannel {
+public:
+    string name;
+    string kind;
+    deque<V> inq;
+    deque<V> outq;
+    IOChannel(){}
+    IOChannel(const string&n,const string&k):name(n),kind(k){}
+    void push_in(const V&v){inq.push_back(v);}
+    bool has_in()const{return !inq.empty();}
+    V pop_in(){V v=inq.front();inq.pop_front();return v;}
+    void push_out(const V&v){outq.push_back(v);}
+    bool has_out()const{return !outq.empty();}
+    V pop_out(){V v=outq.front();outq.pop_front();return v;}
+};
+
+class IOHub {
+public:
+    unordered_map<string,IOChannel> chans;
+    IOChannel& get(const string&n,const string&k="generic"){
+        if(chans.find(n)==chans.end())chans[n]=IOChannel(n,k);
+        return chans[n];
+    }
+    void push_in(const string&n,const V&v){get(n).push_in(v);}
+    bool has_in(const string&n){return chans.find(n)!=chans.end()&&chans[n].has_in();}
+    V pop_in(const string&n){return chans[n].pop_in();}
+    void push_out(const string&n,const V&v){get(n).push_out(v);}
+    bool has_out(const string&n){return chans.find(n)!=chans.end()&&chans[n].has_out();}
+    V pop_out(const string&n){return chans[n].pop_out();}
+};
+
+class Tool {
+public:
+    string name;
+    virtual ~Tool(){}
+    virtual V call(const V&in,E&e,MEM&m)=0;
+};
+
+class ToolEcho : public Tool {
+public:
+    ToolEcho(){name="echo";}
+    V call(const V&in,E&e,MEM&m)override{
+        V out=in;
+        return out;
+    }
+};
+
+class ToolStats : public Tool {
+public:
+    ToolStats(){name="stats";}
+    V call(const V&in,E&e,MEM&m)override{
+        V s(6);
+        double sum=0.0;
+        double mx=-1e9;
+        double mn=1e9;
+        for(double x:in.d){
+            sum+=x;
+            mx=max(mx,x);
+            mn=min(mn,x);
+        }
+        double avg=in.d.empty()?0.0:sum/in.d.size();
+        s.d[0]=avg;
+        s.d[1]=mx;
+        s.d[2]=mn;
+        s.d[3]=in.m();
+        s.d[4]=e.e;
+        s.d[5]=e.mo;
+        return s;
+    }
+};
+
+class ToolMemInfo : public Tool {
+public:
+    ToolMemInfo(){name="meminfo";}
+    V call(const V&in,E&e,MEM&m)override{
+        V v(4);
+        v.d[0]=m.s()/100000.0;
+        v.d[1]=m.avg_imp();
+        v.d[2]=e.fc;
+        v.d[3]=e.int_c;
+        return v;
+    }
+};
+
+class Toolset {
+public:
+    unordered_map<string,unique_ptr<Tool>> tools;
+    void add(unique_ptr<Tool>t){
+        string n=t->name;
+        tools[n]=move(t);
+    }
+    bool has(const string&n)const{
+        return tools.find(n)!=tools.end();
+    }
+    V run(const string&n,const V&in,E&e,MEM&m){
+        auto it=tools.find(n);
+        if(it==tools.end())return in;
+        return it->second->call(in,e,m);
+    }
+};
+
+class P_TOOL : public P {
+    Toolset* ts;
+public:
+    P_TOOL(Toolset* t):ts(t){}
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        if(!ts){o.push_back(i);return;}
+        V out=i;
+        if(ts->has("stats"))out=ts->run("stats",i,e,m);
+        o.push_back(out);
+        e.cc+=0.015;
+    }
+    string nm()override{return "P_TOOL";}
+};
+
+
+
