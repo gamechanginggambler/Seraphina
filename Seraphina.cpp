@@ -502,3 +502,315 @@ public:
     }
     string nm()override{return "CRS";}
 };
+
+#include<cstdint>
+
+using Byte = unsigned char;
+using ByteVec = vector<Byte>;
+
+class UBuffer {
+public:
+    ByteVec data;
+    UBuffer() {}
+    UBuffer(size_t n) { data.resize(n); }
+    size_t size() const { return data.size(); }
+    void clear() { data.clear(); }
+    void append(const ByteVec &v) { data.insert(data.end(), v.begin(), v.end()); }
+    void append(const string &s) { data.insert(data.end(), s.begin(), s.end()); }
+    string to_string() const { return string(data.begin(), data.end()); }
+};
+
+class UStream {
+public:
+    deque<Byte> q;
+    void push(const ByteVec &v) { for (auto b : v) q.push_back(b); }
+    void push_str(const string &s) { for (auto c : s) q.push_back((Byte)c); }
+    bool empty() const { return q.empty(); }
+    Byte pop() { Byte b = q.front(); q.pop_front(); return b; }
+    size_t size() const { return q.size(); }
+};
+
+enum class UFormatKind {
+    Unknown,
+    Text,
+    Binary,
+    Audio,
+    Image,
+    Video,
+    Structured,
+    Code,
+    Archive
+};
+
+struct UFormat {
+    UFormatKind kind;
+    string mime;
+    string ext;
+    UFormat() : kind(UFormatKind::Unknown) {}
+};
+
+class UFormatDetector {
+public:
+    UFormat detect(const ByteVec &v) {
+        UFormat f;
+        if (v.empty()) return f;
+        bool text = true;
+        for (auto b : v) {
+            if (b == 0) { text = false; break; }
+        }
+        if (text) {
+            f.kind = UFormatKind::Text;
+            f.mime = "text/plain";
+            f.ext = ".txt";
+        } else {
+            f.kind = UFormatKind::Binary;
+            f.mime = "application/octet-stream";
+            f.ext = ".bin";
+        }
+        return f;
+    }
+};
+
+class UToken {
+public:
+    string type;
+    string value;
+    double num;
+    UToken() : num(0.0) {}
+};
+
+class UTokenStream {
+public:
+    vector<UToken> tokens;
+    size_t pos = 0;
+    bool has_next() const { return pos < tokens.size(); }
+    UToken next() { return tokens[pos++]; }
+    UToken peek() const { return tokens[pos]; }
+};
+
+class UParser {
+public:
+    vector<UToken> tokenize_text(const string &s) {
+        vector<UToken> out;
+        string cur;
+        for (char c : s) {
+            if (isspace((unsigned char)c)) {
+                if (!cur.empty()) {
+                    UToken t;
+                    t.type = "word";
+                    t.value = cur;
+                    out.push_back(t);
+                    cur.clear();
+                }
+            } else if (ispunct((unsigned char)c)) {
+                if (!cur.empty()) {
+                    UToken t;
+                    t.type = "word";
+                    t.value = cur;
+                    out.push_back(t);
+                    cur.clear();
+                }
+                UToken p;
+                p.type = "punct";
+                p.value = string(1, c);
+                out.push_back(p);
+            } else {
+                cur.push_back(c);
+            }
+        }
+        if (!cur.empty()) {
+            UToken t;
+            t.type = "word";
+            t.value = cur;
+            out.push_back(t);
+        }
+        return out;
+    }
+
+    vector<UToken> tokenize_bytes(const ByteVec &v) {
+        string s(v.begin(), v.end());
+        return tokenize_text(s);
+    }
+
+    UTokenStream parse(const ByteVec &v) {
+        UTokenStream ts;
+        ts.tokens = tokenize_bytes(v);
+        ts.pos = 0;
+        return ts;
+    }
+
+    UTokenStream parse_text(const string &s) {
+        UTokenStream ts;
+        ts.tokens = tokenize_text(s);
+        ts.pos = 0;
+        return ts;
+    }
+};
+
+class UIR {
+public:
+    vector<double> code;
+    void clear() { code.clear(); }
+    void add(double x) { code.push_back(x); }
+    size_t size() const { return code.size(); }
+};
+
+class UCompiler {
+public:
+    UIR compile_tokens(const vector<UToken> &tokens) {
+        UIR ir;
+        for (auto &t : tokens) {
+            double v = 0.0;
+            for (char c : t.value) v += (unsigned char)c;
+            ir.add(v / 255.0);
+        }
+        return ir;
+    }
+
+    UIR compile_text(const string &s) {
+        UParser p;
+        auto toks = p.tokenize_text(s);
+        return compile_tokens(toks);
+    }
+
+    ByteVec emit_binary(const UIR &ir) {
+        ByteVec out;
+        for (double x : ir.code) {
+            double cl = max(0.0, min(1.0, x));
+            Byte b = (Byte)(cl * 255.0);
+            out.push_back(b);
+        }
+        return out;
+    }
+};
+
+class UDecompiler {
+public:
+    UIR decode_binary(const ByteVec &v) {
+        UIR ir;
+        for (auto b : v) {
+            double x = (double)b / 255.0;
+            ir.add(x);
+        }
+        return ir;
+    }
+
+    string reconstruct_text(const UIR &ir) {
+        string s;
+        for (double x : ir.code) {
+            double v = max(0.0, min(1.0, x));
+            int c = (int)(v * 255.0);
+            if (c < 32) c = 32;
+            if (c > 126) c = 126;
+            s.push_back((char)c);
+        }
+        return s;
+    }
+};
+
+class UAssembler {
+public:
+    ByteVec assemble_ir(const UIR &ir) {
+        UCompiler c;
+        return c.emit_binary(ir);
+    }
+
+    ByteVec assemble_text(const string &s) {
+        UCompiler c;
+        UIR ir = c.compile_text(s);
+        return c.emit_binary(ir);
+    }
+};
+
+class UDisassembler {
+public:
+    UIR disassemble_bytes(const ByteVec &v) {
+        UDecompiler d;
+        return d.decode_binary(v);
+    }
+
+    string disassemble_to_text(const ByteVec &v) {
+        UDecompiler d;
+        UIR ir = d.decode_binary(v);
+        return d.reconstruct_text(ir);
+    }
+};
+
+class UDeviceDescriptor {
+public:
+    string id;
+    string kind;
+    string path;
+    map<string,string> props;
+};
+
+class UDriver {
+public:
+    vector<UDeviceDescriptor> devices;
+
+    void register_device(const UDeviceDescriptor &d) {
+        devices.push_back(d);
+    }
+
+    vector<UDeviceDescriptor> list() const {
+        return devices;
+    }
+
+    UBuffer read(const UDeviceDescriptor &d) {
+        UBuffer b;
+        string s = d.id + ":" + d.kind + ":" + d.path;
+        b.append(s);
+        return b;
+    }
+
+    void write(const UDeviceDescriptor &d, const UBuffer &buf) {
+        (void)d;
+        (void)buf;
+    }
+};
+
+class UAdapter {
+public:
+    UFormatDetector detector;
+    UParser parser;
+    UCompiler compiler;
+    UDecompiler decompiler;
+    UAssembler assembler;
+    UDisassembler disassembler;
+    UDriver driver;
+
+    UBuffer adapt_input(const ByteVec &raw) {
+        UFormat f = detector.detect(raw);
+        if (f.kind == UFormatKind::Text) {
+            UTokenStream ts = parser.parse(raw);
+            UIR ir = compiler.compile_tokens(ts.tokens);
+            ByteVec bin = compiler.emit_binary(ir);
+            UBuffer b;
+            b.append(bin);
+            return b;
+        } else {
+            UBuffer b;
+            b.append(raw);
+            return b;
+        }
+    }
+
+    UBuffer adapt_output(const UBuffer &buf, UFormatKind target) {
+        if (target == UFormatKind::Text) {
+            UDecompiler d;
+            UIR ir = d.decode_binary(buf.data);
+            string s = d.reconstruct_text(ir);
+            UBuffer out;
+            out.append(s);
+            return out;
+        } else {
+            return buf;
+        }
+    }
+
+    UBuffer transcode(const ByteVec &raw, UFormatKind target) {
+        UBuffer in = adapt_input(raw);
+        return adapt_output(in, target);
+    }
+};
+
