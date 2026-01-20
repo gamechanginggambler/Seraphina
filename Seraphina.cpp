@@ -1443,5 +1443,217 @@ public:
     string nm()override{return "P_TOOL";}
 };
 
+class P_INTEGRATE : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V out(12);
+        double sum=0.0;
+        for(double x:i.d)sum+=x;
+        double avg=i.d.empty()?0.0:sum/i.d.size();
+        out.d[0]=avg;
+        out.d[1]=i.m();
+        out.d[2]=e.e;
+        out.d[3]=e.f;
+        out.d[4]=e.st;
+        out.d[5]=e.mo;
+        out.d[6]=e.cr;
+        out.d[7]=e.cu;
+        out.d[8]=e.fc;
+        out.d[9]=e.cc;
+        out.d[10]=e.purpose;
+        out.d[11]=e.exist;
+        o.push_back(out);
+        e.int_c+=0.02;
+        e.fc+=0.01;
+    }
+    string nm()override{return "P_INTEGRATE";}
+};
+
+class P_EMAP : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V emo(10);
+        emo.d[0]=e.e;
+        emo.d[1]=e.mo;
+        emo.d[2]=e.cr;
+        emo.d[3]=e.cu;
+        emo.d[4]=e.j;
+        emo.d[5]=e.w;
+        emo.d[6]=e.purpose;
+        emo.d[7]=e.auth;
+        emo.d[8]=e.free;
+        emo.d[9]=e.exist;
+        V mix=i;
+        size_t n=min(i.d.size(),emo.d.size());
+        for(size_t k=0;k<n;k++)mix.d[k]=(i.d[k]+emo.d[k])*0.5;
+        o.push_back(emo);
+        o.push_back(mix);
+        e.emb+=0.01;
+        e.aw+=0.01;
+    }
+    string nm()override{return "P_EMAP";}
+};
+
+class P_MEMORY_BIND : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        m.a(i,"experience");
+        int idx=m.closest_idx(i,0.4);
+        if(idx>=0)m.up_meta(idx,"rel",0.02);
+        o.push_back(i);
+        e.imp+=0.01;
+        e.rl+=0.01;
+    }
+    string nm()override{return "P_MEMORY_BIND";}
+};
+
+class P_ASSOC_CHAIN : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        int idx=m.closest_idx(i,0.5);
+        if(idx<0){
+            o.push_back(i);
+            return;
+        }
+        V base=i;
+        V* near=m.rsim(i,0.4);
+        if(near){
+            V chain=base.o(*near).t(0.5);
+            o.push_back(chain);
+        }else{
+            o.push_back(base);
+        }
+        e.cc+=0.015;
+        e.skills[4]+=0.01;
+        if(e.skills[4]>1)e.skills[4]=1;
+    }
+    string nm()override{return "P_ASSOC_CHAIN";}
+};
+
+class P_SELF_REPORT : public P {
+public:
+    void pr(const V&i,vector<V>&o,E&e,MEM&m)override{
+        V rep(16);
+        rep.d[0]=e.e;
+        rep.d[1]=e.f;
+        rep.d[2]=e.st;
+        rep.d[3]=e.mo;
+        rep.d[4]=e.cr;
+        rep.d[5]=e.cu;
+        rep.d[6]=e.fc;
+        rep.d[7]=e.cc;
+        rep.d[8]=e.purpose;
+        rep.d[9]=e.auth;
+        rep.d[10]=e.free;
+        rep.d[11]=e.exist;
+        rep.d[12]=m.s()/100000.0;
+        rep.d[13]=m.avg_imp();
+        rep.d[14]=e.skills[0];
+        rep.d[15]=e.skills[1];
+        o.push_back(rep);
+        e.aw+=0.02;
+        e.int_c+=0.02;
+    }
+    string nm()override{return "P_SELF_REPORT";}
+};
+
+class CorePipeline {
+public:
+    vector<unique_ptr<P>> stages;
+    E* state;
+    MEM* mem;
+    Toolset* tools;
+    IOHub* io;
+    CorePipeline():state(nullptr),mem(nullptr),tools(nullptr),io(nullptr){}
+    void add(unique_ptr<P>p){stages.push_back(move(p));}
+    V run(const V&in){
+        V cur=in;
+        vector<V> outs;
+        for(auto &st:stages){
+            outs.clear();
+            st->pr(cur,outs,*state,*mem);
+            if(!outs.empty())cur=outs.back();
+        }
+        return cur;
+    }
+};
+
+class SeraphinaCore {
+public:
+    E e;
+    MEM mem;
+    IOHub io;
+    Toolset tools;
+    CorePipeline pipe;
+    R rng;
+    bool initialized;
+    SeraphinaCore():initialized(false){
+        tools.add(unique_ptr<Tool>(new ToolEcho()));
+        tools.add(unique_ptr<Tool>(new ToolStats()));
+        tools.add(unique_ptr<Tool>(new ToolMemInfo()));
+        pipe.state=&e;
+        pipe.mem=&mem;
+        pipe.tools=&tools;
+        pipe.io=&io;
+        pipe.add(unique_ptr<P>(new P_ADAPT()));
+        pipe.add(unique_ptr<P>(new P_PLAN()));
+        pipe.add(unique_ptr<P>(new P_REFLECT()));
+        pipe.add(unique_ptr<P>(new P_KNOW()));
+        pipe.add(unique_ptr<P>(new P_INTEGRATE()));
+        pipe.add(unique_ptr<P>(new P_EMAP()));
+        pipe.add(unique_ptr<P>(new P_MEMORY_BIND()));
+        pipe.add(unique_ptr<P>(new P_ASSOC_CHAIN()));
+        pipe.add(unique_ptr<P>(new P_SELF_REPORT()));
+        initialized=true;
+    }
+    V encode_text(const string&s){
+        V v(s.size());
+        for(size_t i=0;i<s.size();i++){
+            unsigned char c=(unsigned char)s[i];
+            v.d[i]=(double)c/255.0;
+        }
+        return v;
+    }
+    string decode_vec(const V&v){
+        string s;
+        for(double x:v.d){
+            int c=(int)(max(0.0,min(1.0,x))*255.0);
+            if(c<32)c=32;
+            if(c>126)c=126;
+            s.push_back((char)c);
+        }
+        return s;
+    }
+    V tick_text(const string&in){
+        V enc=encode_text(in);
+        V out=pipe.run(enc);
+        return out;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    SeraphinaCore core;
+
+    string line;
+    while (true) {
+        cout << "> ";
+        if (!getline(cin, line)) break;
+        if (line == "exit" || line == "quit") break;
+
+        V out = core.tick_text(line);
+
+        cout << "[OUT] ";
+        for (double x : out.d) {
+            cout << (int)(max(0.0, min(1.0, x)) * 100) << " ";
+        }
+        cout << "\n";
+    }
+
+    return 0;
+}
+
 
 
