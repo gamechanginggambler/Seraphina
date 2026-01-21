@@ -1655,5 +1655,452 @@ int main() {
     return 0;
 }
 
+struct IOContext {
+    std::string channel;   // "text", "audio", "image", etc.
+    std::string source;    // "mic", "file", "net", etc.
+    std::string target;    // "console", "speaker", etc.
+};
+
+struct InputPacket {
+    IOContext ctx;
+    std::string text;              // for text/raw
+    std::vector<uint8_t> bytes;    // generic binary
+    std::vector<float> features;   // embeddings/features
+};
+
+struct OutputPacket {
+    IOContext ctx;
+    std::string text;
+    std::vector<uint8_t> bytes;
+    std::vector<float> features;
+};
+
+
+struct InputAdapter {
+    virtual ~InputAdapter() {}
+    virtual bool poll(InputPacket &pkt) = 0; // returns true if something was read
+};
+
+struct OutputAdapter {
+    virtual ~OutputAdapter() {}
+    virtual void emit(const OutputPacket &pkt) = 0;
+};
+
+struct IOHub {
+    std::vector<std::shared_ptr<InputAdapter>>  inputs;
+    std::vector<std::shared_ptr<OutputAdapter>> outputs;
+
+    void add_input(const std::shared_ptr<InputAdapter> &in)  { inputs.push_back(in); }
+    void add_output(const std::shared_ptr<OutputAdapter> &out) { outputs.push_back(out); }
+
+    bool poll_any(InputPacket &pkt) {
+        for (auto &in : inputs) {
+            if (in->poll(pkt)) return true;
+        }
+        return false;
+    }
+
+    void broadcast(const OutputPacket &pkt) {
+        for (auto &out : outputs) {
+            if (out->ctx.channel == pkt.ctx.channel || out->ctx.channel == "any") {
+                out->emit(pkt);
+            }
+        }
+    }
+};
+
+struct ConsoleTextInput : InputAdapter {
+    IOContext ctx;
+    ConsoleTextInput() { ctx.channel = "text"; ctx.source = "console"; ctx.target = "core"; }
+
+    bool poll(InputPacket &pkt) override {
+        std::string line;
+        if (!std::getline(std::cin, line)) return false;
+        if (line.empty()) return false;
+        pkt.ctx = ctx;
+        pkt.text = line;
+        return true;
+    }
+};
+
+struct ConsoleTextOutput : OutputAdapter {
+    IOContext ctx;
+    ConsoleTextOutput() { ctx.channel = "text"; ctx.source = "core"; ctx.target = "console"; }
+
+    void emit(const OutputPacket &pkt) override {
+        std::cout << pkt.text << std::endl;
+    }
+};
+
+struct RawDataInput : InputAdapter {
+    IOContext ctx;
+    RawDataInput(const std::string &src) { ctx.channel = "raw"; ctx.source = src; ctx.target = "core"; }
+
+    bool poll(InputPacket &pkt) override {
+        // placeholder: fill from file/socket/etc.
+        return false;
+    }
+};
+
+struct RawDataOutput : OutputAdapter {
+    IOContext ctx;
+    RawDataOutput(const std::string &tgt) { ctx.channel = "raw"; ctx.source = "core"; ctx.target = tgt; }
+
+    void emit(const OutputPacket &pkt) override {
+        // placeholder: write bytes somewhere
+    }
+};
+
+struct AudioInputAdapter : InputAdapter {
+    IOContext ctx;
+    AudioInputAdapter(const std::string &src = "mic") {
+        ctx.channel = "audio"; ctx.source = src; ctx.target = "core";
+    }
+    bool poll(InputPacket &pkt) override {
+        // TODO: integrate with platform audio capture
+        return false;
+    }
+};
+
+struct AudioOutputAdapter : OutputAdapter {
+    IOContext ctx;
+    AudioOutputAdapter(const std::string &tgt = "speaker") {
+        ctx.channel = "audio"; ctx.source = "core"; ctx.target = tgt;
+    }
+    void emit(const OutputPacket &pkt) override {
+        // TODO: integrate with audio playback
+    }
+};
+
+struct ImageInputAdapter : InputAdapter {
+    IOContext ctx;
+    ImageInputAdapter(const std::string &src = "camera") {
+        ctx.channel = "image"; ctx.source = src; ctx.target = "core";
+    }
+    bool poll(InputPacket &pkt) override {
+        // TODO: capture frame, encode into bytes/features
+        return false;
+    }
+};
+
+struct ImageOutputAdapter : OutputAdapter {
+    IOContext ctx;
+    ImageOutputAdapter(const std::string &tgt = "screen") {
+        ctx.channel = "image"; ctx.source = "core"; ctx.target = tgt;
+    }
+    void emit(const OutputPacket &pkt) override {
+        // TODO: render image from bytes/features
+    }
+};
+
+struct VideoInputAdapter : InputAdapter {
+    IOContext ctx;
+    VideoInputAdapter(const std::string &src = "camera") {
+        ctx.channel = "video"; ctx.source = src; ctx.target = "core";
+    }
+    bool poll(InputPacket &pkt) override {
+        // TODO: capture frame sequence
+        return false;
+    }
+};
+
+struct VideoOutputAdapter : OutputAdapter {
+    IOContext ctx;
+    VideoOutputAdapter(const std::string &tgt = "screen") {
+        ctx.channel = "video"; ctx.source = "core"; ctx.target = tgt;
+    }
+    void emit(const OutputPacket &pkt) override {
+        // TODO: render frames
+    }
+};
+
+struct Pipeline {
+    virtual ~Pipeline() {}
+    virtual void process(const InputPacket &in, OutputPacket &out) = 0;
+};
+
+struct TextToCorePipeline : Pipeline {
+    Core *core;
+    TextToCorePipeline(Core *c) : core(c) {}
+    void process(const InputPacket &in, OutputPacket &out) override {
+        auto v = core->tick_text(in.text);
+        out.ctx.channel = "text";
+        out.text = "[OUT] " + std::to_string(v.d.size()) + " dims";
+    }
+};
+
+// ===============================
+// RAW DATA INPUT ADAPTER
+// ===============================
+struct RawDataInputAdapter : InputAdapter {
+    IOContext ctx;
+
+    RawDataInputAdapter(const std::string &src = "file") {
+        ctx.channel = "raw";
+        ctx.source  = src;
+        ctx.target  = "core";
+    }
+
+    bool poll(InputPacket &pkt) override {
+        // Placeholder: no automatic polling.
+        // You can manually feed data into this adapter later.
+        return false;
+    }
+
+    // Manual injection for environments that want to push raw bytes
+    bool inject(const std::vector<uint8_t> &bytes) {
+        // You can expand this later to queue packets
+        return false;
+    }
+};
+
+// ===============================
+// RAW DATA OUTPUT ADAPTER
+// ===============================
+struct RawDataOutputAdapter : OutputAdapter {
+    IOContext ctx;
+
+    RawDataOutputAdapter(const std::string &tgt = "file") {
+        ctx.channel = "raw";
+        ctx.source  = "core";
+        ctx.target  = tgt;
+    }
+
+    void emit(const OutputPacket &pkt) override {
+        // Placeholder: write bytes somewhere
+        // You can fill this in with file/socket logic later
+    }
+};
+
+// ===============================
+// AUDIO FEATURE EXTRACTOR INTERFACE
+// ===============================
+struct AudioFeatureExtractor {
+    virtual ~AudioFeatureExtractor() {}
+
+    // Convert raw audio bytes into a feature vector
+    virtual std::vector<float> extract_features(
+        const std::vector<uint8_t> &audio_bytes
+    ) = 0;
+
+    // Optional: convert PCM samples directly
+    virtual std::vector<float> extract_from_pcm(
+        const std::vector<float> &pcm_samples
+    ) {
+        return {};
+    }
+};
+
+// ===============================
+// BASIC DUMMY AUDIO FEATURE EXTRACTOR
+// ===============================
+struct DummyAudioFeatureExtractor : AudioFeatureExtractor {
+    std::vector<float> extract_features(
+        const std::vector<uint8_t> &audio_bytes
+    ) override {
+        // Placeholder: convert bytes to normalized floats
+        std::vector<float> out;
+        out.reserve(audio_bytes.size());
+        for (uint8_t b : audio_bytes) {
+            out.push_back(b / 255.0f);
+        }
+        return out;
+    }
+};
+
+// ===============================
+// AUDIO INPUT ADAPTER
+// ===============================
+struct AudioInputAdapter : InputAdapter {
+    IOContext ctx;
+    std::shared_ptr<AudioFeatureExtractor> extractor;
+
+    AudioInputAdapter(const std::string &src = "mic",
+                      std::shared_ptr<AudioFeatureExtractor> ext = nullptr) {
+        ctx.channel = "audio";
+        ctx.source  = src;
+        ctx.target  = "core";
+        extractor   = ext;
+    }
+
+    bool poll(InputPacket &pkt) override {
+        // Placeholder: no real audio capture here.
+        // In a real environment, fill audio_bytes from mic/device.
+        std::vector<uint8_t> audio_bytes;
+        if (audio_bytes.empty()) return false;
+
+        pkt.ctx = ctx;
+        if (extractor) {
+            pkt.features = extractor->extract_features(audio_bytes);
+        } else {
+            // fallback: raw bytes only
+            pkt.bytes = audio_bytes;
+        }
+        return true;
+    }
+};
+
+// ===============================
+// AUDIO OUTPUT ADAPTER
+// ===============================
+struct AudioOutputAdapter : OutputAdapter {
+    IOContext ctx;
+
+    AudioOutputAdapter(const std::string &tgt = "speaker") {
+        ctx.channel = "audio";
+        ctx.source  = "core";
+        ctx.target  = tgt;
+    }
+
+    void emit(const OutputPacket &pkt) override {
+        // Placeholder: integrate with audio playback in a real environment.
+        // For now, we can just log that audio was "emitted".
+        std::cout << "[AUDIO OUT] features=" << pkt.features.size()
+                  << " bytes=" << pkt.bytes.size() << std::endl;
+    }
+};
+
+// ===============================
+// IMAGE FEATURE EXTRACTOR INTERFACE
+// ===============================
+struct ImageFeatureExtractor {
+    virtual ~ImageFeatureExtractor() {}
+
+    // Convert raw image bytes into a feature vector
+    virtual std::vector<float> extract_features(
+        const std::vector<uint8_t> &image_bytes
+    ) = 0;
+};
+
+// ===============================
+// DUMMY IMAGE FEATURE EXTRACTOR
+// ===============================
+struct DummyImageFeatureExtractor : ImageFeatureExtractor {
+    std::vector<float> extract_features(
+        const std::vector<uint8_t> &image_bytes
+    ) override {
+        std::vector<float> out;
+        out.reserve(image_bytes.size());
+        for (uint8_t b : image_bytes) {
+            out.push_back(b / 255.0f);
+        }
+        return out;
+    }
+};
+
+// ===============================
+// VIDEO FRAME PIPELINE
+// ===============================
+struct VideoFramePipeline : Pipeline {
+    Core *core;
+
+    VideoFramePipeline(Core *c) : core(c) {}
+
+    void process(const InputPacket &in, OutputPacket &out) override {
+        // Assumes in.features or in.bytes represent a frame embedding.
+        // For now, just echo metadata.
+        out.ctx.channel = "video";
+        out.text = "[VIDEO PIPELINE] frame features=" +
+                   std::to_string(in.features.size()) +
+                   " bytes=" + std::to_string(in.bytes.size());
+    }
+};
+
+// ===============================
+// FILE SYSTEM SCANNER MODULE
+// ===============================
+struct FileSystemScanner {
+    // List files in a directory (placeholder, no real FS calls here)
+    std::vector<std::string> list_files(const std::string &path) {
+        // In a real environment, use <filesystem> or platform APIs.
+        return {};
+    }
+
+    // Read a file into bytes (placeholder)
+    std::vector<uint8_t> read_file(const std::string &path) {
+        std::vector<uint8_t> data;
+        // Fill from real file IO in a proper environment.
+        return data;
+    }
+};
+
+// ===============================
+// SOCKET COMMUNICATION MODULE (ABSTRACT)
+// ===============================
+struct SocketEndpoint {
+    virtual ~SocketEndpoint() {}
+
+    virtual bool connect(const std::string &host, int port) = 0;
+    virtual bool send_bytes(const std::vector<uint8_t> &data) = 0;
+    virtual bool recv_bytes(std::vector<uint8_t> &out) = 0;
+};
+
+// Dummy stub that does nothing but define the shape
+struct DummySocketEndpoint : SocketEndpoint {
+    bool connect(const std::string &, int) override { return false; }
+    bool send_bytes(const std::vector<uint8_t> &) override { return false; }
+    bool recv_bytes(std::vector<uint8_t> &) override { return false; }
+};
+
+// ===============================
+// UNIVERSAL MULTIMODAL ROUTER
+// ===============================
+struct MultimodalRouter {
+    Pipeline *text_pipe   = nullptr;
+    Pipeline *audio_pipe  = nullptr;
+    Pipeline *image_pipe  = nullptr;
+    Pipeline *video_pipe  = nullptr;
+    Pipeline *raw_pipe    = nullptr;
+
+    void route(const InputPacket &in, OutputPacket &out) {
+        if (in.ctx.channel == "text" && text_pipe) {
+            text_pipe->process(in, out);
+        } else if (in.ctx.channel == "audio" && audio_pipe) {
+            audio_pipe->process(in, out);
+        } else if (in.ctx.channel == "image" && image_pipe) {
+            image_pipe->process(in, out);
+        } else if (in.ctx.channel == "video" && video_pipe) {
+            video_pipe->process(in, out);
+        } else if (in.ctx.channel == "raw" && raw_pipe) {
+            raw_pipe->process(in, out);
+        } else {
+            out.ctx = in.ctx;
+            out.text = "[ROUTER] No pipeline for channel: " + in.ctx.channel;
+        }
+    }
+};
+
+// ===============================
+// SAFE RENDERING ENGINE
+// ===============================
+struct SafeRenderingEngine {
+    bool allow_text  = true;
+    bool allow_image = false;
+    bool allow_audio = false;
+    bool allow_video = false;
+
+    void render(const OutputPacket &pkt) {
+        if (pkt.ctx.channel == "text") {
+            if (!allow_text) return;
+            std::cout << pkt.text << std::endl;
+        } else if (pkt.ctx.channel == "image") {
+            if (!allow_image) return;
+            std::cout << "[RENDER IMAGE] bytes=" << pkt.bytes.size() << std::endl;
+        } else if (pkt.ctx.channel == "audio") {
+            if (!allow_audio) return;
+            std::cout << "[RENDER AUDIO] features=" << pkt.features.size() << std::endl;
+        } else if (pkt.ctx.channel == "video") {
+            if (!allow_video) return;
+            std::cout << "[RENDER VIDEO] features=" << pkt.features.size() << std::endl;
+        } else {
+            std::cout << "[RENDER UNKNOWN CHANNEL] " << pkt.ctx.channel << std::endl;
+        }
+    }
+};
+
+
+
+
+
 
 
